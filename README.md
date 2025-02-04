@@ -2,9 +2,13 @@
 
 ScoreFlow is an automated multiagent workflow generation and optimization method. This guide walks you through setting up the environment, running optimization, and performing inference.
 
-<img src="figures/pipeline.png" alt="Pipeline of ScoreFlow" width="900">
+<div style="text-align: center;">
+    <img src="figures/pipeline.png" alt="Pipeline of ScoreFlow" width="900">
+</div>
 
-<img src="figures/table.png" alt="Pipeline of ScoreFlow" width="700">
+<div style="text-align: center;">
+    <img src="figures/table.png" alt="Pipeline of ScoreFlow" width="700">
+</div>
 
 ## Setup
 
