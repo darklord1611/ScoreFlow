@@ -4,7 +4,7 @@ ScoreFlow is an automated multiagent workflow generation and optimization method
 
 <img src="figures/pipeline.png" alt="Pipeline of ScoreFlow" width="900">
 
-<img src="figures/table.png" alt="Pipeline of ScoreFlow" width="900">
+<img src="figures/table.png" alt="Pipeline of ScoreFlow" width="700">
 
 ## Setup
 
