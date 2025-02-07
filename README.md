@@ -1,6 +1,11 @@
 # ScoreFlow: Mastering LLM Agent Workflows via Score-based Preference Optimization
+<p align="left">
+  <a href='https://arxiv.org/abs/2502.04306'>
+  <img src='https://img.shields.io/badge/Arxiv-2502.04306-A42C25?style=flat&logo=arXiv&logoColor=A42C25'></a> 
+  </p>
+  
 
-Official implementation of our [ScoreFlow](). Affiliation: University of Chicago, Princeton University, University of Oxford.
+Official implementation of our [ScoreFlow](https://arxiv.org/abs/2502.04306). Affiliation: University of Chicago, Princeton University, University of Oxford.
 
 ## Introduction
 ScoreFlow is an automated multi-agent workflow generation and optimization method, which leverages efficient gradient-based optimization in a continuous space. ScoreFlow incorporates Score-DPO, a novel variant of the direct preference optimization method that accounts for quantitative feedback. Across six benchmarks spanning question answering, coding, and mathematical reasoning, ScoreFlow achieves an 8.2\% improvement over existing baselines. Moreover, it empowers smaller models to outperform larger ones with lower inference costs.
@@ -62,7 +67,7 @@ python evaluate.py --dataset=HumanEval --task=inference --epoch=2
 @article{wang2025scoreflow,
   title={ScoreFlow: Mastering LLM Agent Workflows via Score-based Preference Optimization},
   author={Wang, Yinjie and Yang, Ling and Li, Guohao and Wang, Mengdi and Aragam, Bryon},
-  journal={arXiv preprint arXiv:},
+  journal={arXiv preprint arXiv:2502.04306},
   year={2025}
 }
 ```
