@@ -1,4 +1,5 @@
-# ScoreFlow
+# ScoreFlow: Mastering LLM Agent Workflows via Score-based Preference Optimization
+
 
 ## Introduction
 ScoreFlow is an automated multi-agent workflow generation and optimization method, which leverages efficient gradient-based optimization in a continuous space. ScoreFlow incorporates Score-DPO, a novel variant of the direct preference optimization method that accounts for quantitative feedback. Across six benchmarks spanning question answering, coding, and mathematical reasoning, ScoreFlow achieves an 8.2\% improvement over existing baselines. Moreover, it empowers smaller models to outperform larger ones with lower inference costs.
@@ -55,4 +56,12 @@ python evaluate.py --dataset=HumanEval --task=inference --epoch=2
 - The optimization and inference scripts should be run sequentially.
 - If `evaluate.py` gets stuck, try rerunning it.
 
-
+## Citation
+```
+@article{wang2025scoreflow,
+  title={ScoreFlow: Mastering LLM Agent Workflows via Score-based Preference Optimization},
+  author={Wang, Yinjie and Yang, Ling and Li, Guohao and Wang, Mengdi and Aragam, Bryon},
+  journal={arXiv preprint arXiv:},
+  year={2025}
+}
+```
