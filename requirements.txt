@@ -1,0 +1,10 @@
+vllm==0.6.4.post1
+torch
+torchvision
+torchaudio
+typing-extensions==4.12.2
+openai==1.45.0
+transformers==4.46.0
+accelerate
+trl
+peft
