@@ -1,5 +1,6 @@
 # ScoreFlow: Mastering LLM Agent Workflows via Score-based Preference Optimization
 
+Official implementation of our [ScoreFlow](). Affiliation: University of Chicago, Princeton University, University of Oxford.
 
 ## Introduction
 ScoreFlow is an automated multi-agent workflow generation and optimization method, which leverages efficient gradient-based optimization in a continuous space. ScoreFlow incorporates Score-DPO, a novel variant of the direct preference optimization method that accounts for quantitative feedback. Across six benchmarks spanning question answering, coding, and mathematical reasoning, ScoreFlow achieves an 8.2\% improvement over existing baselines. Moreover, it empowers smaller models to outperform larger ones with lower inference costs.
