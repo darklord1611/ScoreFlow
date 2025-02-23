@@ -61,7 +61,7 @@ python evaluate.py --dataset=HumanEval --task=inference --epoch=2
 - Ensure all dependencies are installed from `requirements.txt`.
 - The optimization and inference scripts should be run sequentially.
 - If `evaluate.py` gets stuck, try rerunning it.
-- We have added the majority-optimal workflow structure for different tasks in this link: [examples](https://github.com/yinjjiew/Data/blob/main/scoreflow_data/examples.zip).
+- We have added the majority-optimal workflow structure for different tasks in this link: [examples](https://github.com/yinjjiew/Data/raw/main/scoreflow_data/examples.zip).
 
 ## Citation
 ```
