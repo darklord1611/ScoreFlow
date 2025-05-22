@@ -26,11 +26,13 @@ ScoreFlow is an automated multi-agent workflow generation and optimization metho
 ```bash
 conda create -n scoreflow python=3.10
 source activate scoreflow
-pip install --upgrade git+https://github.com/geekan/MetaGPT.git
+# Install MetaGPT locally to resolve any conflicts
+cd metagpt_local
+pip install .
+cd ..
 pip install -r requirements.txt
-
 ```
-You can ignore the dependency error of metagpt 0.8.1.
+You can ignore the dependency error of metagpt 1.0.0.
 
 ## Optimization Process
 
@@ -40,7 +42,6 @@ To optimize the model, follow these steps iteratively from `i = 0` then `i = 1`,
 python generate.py --dataset=HumanEval --task=optimize --epoch=i
 python evaluate.py --dataset=HumanEval --task=optimize --epoch=i
 accelerate launch --num_processes=1 optimize.py --epoch=i
-
 ```
 
 You can change the number of iterations by incrementing `i`. The dataset you can choose: HumanEval, MBPP, MATH, GSM8K, DROP, and HotpotQA.
@@ -52,7 +53,6 @@ To run inference on the test set, execute:
 ```bash
 python generate.py --dataset=HumanEval --task=inference --epoch=2
 python evaluate.py --dataset=HumanEval --task=inference --epoch=2
-
 ```
 
 ## Notes
