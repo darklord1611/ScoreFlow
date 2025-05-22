@@ -19,7 +19,7 @@ ScoreFlow is an automated multi-agent workflow generation and optimization metho
 ## Setup
 
 1. You need approximately **80-90GB** VRAM. You can modify your GPU settings in `./config/config1.yaml`.
-2. Set up your api key in `./config/config2.yaml`.
+2. Set up your api key in `./config/config2.yaml`. If your rate per minute is less than 1000, we suggest lowering the
 3. Download [dataset](https://github.com/yinjjiew/Data/raw/main/scoreflow_data/data.zip) and unzip it in this directory `./`.
 4. To set up the environment, follow these steps:
 
