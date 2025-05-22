@@ -27,6 +27,7 @@ ScoreFlow is an automated multi-agent workflow generation and optimization metho
 conda create -n scoreflow python=3.10
 source activate scoreflow
 # Install MetaGPT locally to resolve any conflicts
+unzip metagpt_local.zip
 cd metagpt_local
 pip install .
 cd ..
