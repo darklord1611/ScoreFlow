@@ -314,6 +314,7 @@ async def generate_graphs(
     START_PORMPT = prompt_module.START_PORMPT
     END_PROMPT = prompt_module.END_PROMPT
 
+    # Build prompts and type list
     prompts = []
     type_list = []
     for problem in data:
@@ -324,24 +325,30 @@ async def generate_graphs(
         else:
             type_list += [None] * graph_num
 
+    # Initial generation
     generated_results = []
     try:
         outputs = llm.generate(prompts, sampling_params)
         for out in outputs:
             if not out or not getattr(out, "outputs", None) or not out.outputs:
-                generated_results.append("<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>")
+                generated_results.append(
+                    "<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>"
+                )
                 continue
             text = getattr(out.outputs[0], "text", "") or ""
             generated_results.append(text + "</graph>")
     except Exception as e:
         logger.info(f"[generator] vLLM generate failed: {e}")
         for _ in prompts:
-            generated_results.append("<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>")
+            generated_results.append(
+                "<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>"
+            )
 
     sub_generated_results = generated_results
     sub_type_list = type_list
     sub_index = list(range(len(generated_results)))
 
+    # Iterative refinement with checkpoints
     while num_epoch >= 0:
         semaphore = asyncio.Semaphore(max_concurrent_tasks)
         fail_list = await get_fail_list(
@@ -360,14 +367,16 @@ async def generate_graphs(
             temp_file_dir,
             provider,
         )
+
         if len(fail_list) == 0:
+            logger.info(f"✅ All graphs passed at epoch {num_epoch}.")
             break
 
         fail_list.sort()
         sub_index = [sub_index[i] for i in fail_list]
         sub_prompts = [prompts[i] for i in sub_index]
         sub_type_list = [type_list[i] for i in sub_index]
-        logger.info(f"epoch: {num_epoch}, fail list: {fail_list}. sub_index: {sub_index}.")
+        logger.info(f"Epoch {num_epoch}: {len(fail_list)} failed graphs. Regenerating...")
 
         outputs = llm.generate(sub_prompts, sampling_params)
         sub_generated_results = [(out.outputs[0].text + "</graph>") for out in outputs]
@@ -375,6 +384,16 @@ async def generate_graphs(
         for idx in sub_index:
             generated_results[idx] = sub_generated_results[sub_index.index(idx)]
             type_list[idx] = sub_type_list[sub_index.index(idx)]
+
+        # ✅ Save checkpoint after each epoch
+        try:
+            os.makedirs(temp_file_dir, exist_ok=True)
+            checkpoint_path = os.path.join(temp_file_dir, f"checkpoint_epoch_{num_epoch}.pkl")
+            with open(checkpoint_path, "wb") as f:
+                pickle.dump(generated_results, f)
+            logger.info(f"[Checkpoint] Saved intermediate results to {checkpoint_path}")
+        except Exception as e:
+            logger.warning(f"[Checkpoint] Failed to save checkpoint at epoch {num_epoch}: {e}")
 
         num_epoch -= 1
 

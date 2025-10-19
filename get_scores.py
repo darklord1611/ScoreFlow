@@ -252,13 +252,13 @@ def main():
 
     # ===== chuẩn bị executor (API thay vì vLLM local) =====
     exec_provider = APILLMProviderShim(
-        base_url="https://api.yescale.io/v1",
-        api_key="sk-AOzQMlsMqmhCbXzCAOOOCkFuOGi9Yx4741EpvrsdWpceYdNM",
-        model_name="gpt-4o-mini",
-        temperature=0.0,
+        base_url=os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1"),
+        api_key=os.environ["OPENAI_API_KEY"],
+        model_name=os.environ.get("OPENAI_MODEL_NAME", "gpt-4o-mini"),
+        temperature=float(os.environ.get("EXECUTOR_TEMPERATURE", 0.0)),
         top_p=0.95,
         max_tokens=512,
-        concurrent=5  # Tăng concurrent cho nhiều request song song
+        concurrent=5
     )
 
     # ===== các tham số mặc định =====

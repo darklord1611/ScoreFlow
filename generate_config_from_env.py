@@ -2,21 +2,39 @@ import os
 import yaml
 from dotenv import load_dotenv
 
-def try_cast(value: str):
-    """Try to cast env values to int or float when appropriate."""
+def try_cast(key: str, value: str):
+    """Try to cast env values to int or float when appropriate.
+    Certain keys like CUDA_VISIBLE_DEVICES should remain as strings.
+    """
     if value is None:
         return None
+
     value = value.strip()
+
+    # Always keep these keys as string
+    string_only_keys = {
+        "CUDA_VISIBLE_DEVICES",
+        "CUDA_DEVICE_ORDER",
+        "TOKENIZERS_PARALLELISM",
+        "NCCL_DEBUG",
+    }
+    if key in string_only_keys:
+        return value
+
     # Try int
     if value.isdigit() or (value.startswith("-") and value[1:].isdigit()):
         return int(value)
+
     # Try float
     try:
         return float(value)
     except ValueError:
         pass
+
     # Return as string otherwise
     return value
+
+import os
 
 def replace_placeholders(obj):
     """Recursively replace ${VAR} placeholders in both keys and values."""
@@ -26,7 +44,8 @@ def replace_placeholders(obj):
             # Replace in key
             if isinstance(key, str) and key.startswith("${") and key.endswith("}"):
                 env_key = key[2:-1]
-                key = os.getenv(env_key, key)
+                key_val = os.getenv(env_key, key)
+                key = try_cast(env_key, key_val)
             elif isinstance(key, str):
                 # Replace inside key if partial pattern exists (e.g. "prefix-${VAR}-suffix")
                 matches = [part for part in key.split("${") if "}" in part]
@@ -49,7 +68,8 @@ def replace_placeholders(obj):
             val = os.getenv(env_var)
             if val is None:
                 raise ValueError(f"Missing environment variable: {env_var}")
-            return try_cast(val)
+            return try_cast(env_var, val)
+
         # Partial substitution (e.g., "some-${VAR}-value")
         matches = [part for part in obj.split("${") if "}" in part]
         for match in matches:
