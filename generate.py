@@ -15,6 +15,9 @@ from termcolor import cprint
 from metagpt.logs import logger
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
+from dotenv import load_dotenv
+
+load_dotenv()
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -440,10 +443,10 @@ def main():
 
     # Executor: dùng API
     api_provider = APILLMProviderShim(
-        base_url="https://api.yescale.io/v1",
-        api_key="sk-AOzQMlsMqmhCbXzCAOOOCkFuOGi9Yx4741EpvrsdWpceYdNM",
-        model_name="gpt-4o-mini-2024-07-18",
-        temperature=0.0,
+        base_url=os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1"),
+        api_key=os.environ["OPENAI_API_KEY"],
+        model_name=os.environ.get("OPENAI_MODEL_NAME", "gpt-4o-mini"),
+        temperature=float(os.environ.get("EXECUTOR_TEMPERATURE", 0.0)),
         top_p=0.95,
         max_tokens=1024,
         concurrent=5

@@ -1,9 +1,12 @@
 from openai import OpenAI
+from dotenv import load_dotenv
+load_dotenv()
+import os
 
 # Khởi tạo client
 client = OpenAI(
-    base_url="https://api.yescale.io/v1",  # KHÔNG có khoảng trắng ở đầu
-    api_key="sk-1BRrBUMuTy3oIc74wSQ2Cw9Kv4zzeSylUFyemcGUejKxupwt"
+    base_url=os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1"),
+    api_key=os.environ["OPENAI_API_KEY"]
 )
 
 # Gửi request chat completion
