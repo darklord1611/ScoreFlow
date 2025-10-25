@@ -1,7 +1,7 @@
 import re
 from typing import Callable, List, Optional, Tuple, Optional
 
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, stop_after_delay, wait_fixed
 
 from ScoreFlow.benchmark.benchmark import BaseBenchmark
 from metagpt.logs import logger
@@ -27,7 +27,7 @@ class GSM8KBenchmark(BaseBenchmark):
             return 0.0, prediction
         return 1.0 if abs(expected_output - prediction) <= 1e-6 else 0.0, prediction
 
-    @retry(stop=stop_after_attempt(5), wait=wait_fixed(1), retry=retry_if_exception_type(Exception), reraise=True)
+    @retry(stop=(stop_after_attempt(3) | stop_after_delay(40)), wait=wait_fixed(1), retry=retry_if_exception_type(Exception), reraise=True)
     async def _generate_outputs(self, graph):
         return await graph()
 

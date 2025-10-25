@@ -7,7 +7,7 @@ import regex
 from sympy import N, simplify
 from sympy.parsing.latex import parse_latex
 from sympy.parsing.sympy_parser import parse_expr
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed, stop_after_delay
 
 from ScoreFlow.benchmark.benchmark import BaseBenchmark
 from metagpt.logs import logger
@@ -106,7 +106,7 @@ class MATHBenchmark(BaseBenchmark):
         except OSError:
             return "no code"
 
-    @retry(stop=stop_after_attempt(5), wait=wait_fixed(1), retry=retry_if_exception_type(Exception), reraise=True)
+    @retry(stop=(stop_after_attempt(3) | stop_after_delay(60)), wait=wait_fixed(1), retry=retry_if_exception_type(Exception), reraise=True)
     async def _generate_outputs(self, graph):
         return await graph()
 

@@ -11,6 +11,9 @@ import ScoreFlow.params
 from metagpt.logs import logger
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 from openai import OpenAI
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Monkey-patch để bypass MetaGPT registry
 import metagpt.provider.llm_provider_registry as registry_module
@@ -92,6 +95,60 @@ class APILLMProviderShim:
                 logger.error(f"[APIExec] Error: {e}")
                 return ""
 
+import aiohttp
+
+class VLLMProviderShim:
+    """
+    Provider cho local vLLM server, giả lập OpenAI API.
+    """
+    def __init__(self, base_url="http://localhost:8000/v1", model_name="Qwen/Qwen2.5-7B-Instruct",
+                 temperature=0.0, top_p=0.95, max_tokens=512, concurrent=5):
+        self.base_url = base_url
+        self.model_name = model_name
+        self.temperature = temperature
+        self.top_p = top_p
+        self.max_tokens = max_tokens
+        self._sem = asyncio.Semaphore(concurrent)
+
+        # MetaGPT compatibility attributes
+        self.api_type = "vllm_api"
+        self.api_base = base_url
+        self.model = model_name
+        self.llm_provider = self
+        self.rpm = 10
+        self.max_budget = 10.0
+        self.calc_usage = True
+
+    async def aask(self, prompt: str, **kwargs) -> str:
+        """Gọi local vLLM API."""
+        async with self._sem:
+            short_prompt = prompt[:400].replace("\n", " ")
+            logger.info(f"[vLLMExec] Prompt: {short_prompt}...")
+
+            payload = {
+                "model": self.model_name,
+                "prompt": prompt,
+                "temperature": self.temperature,
+                "top_p": self.top_p,
+                "max_tokens": self.max_tokens,
+                "stop": ["</graph>"]
+            }
+
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(f"{self.base_url}/completions", json=payload, timeout=120) as resp:
+                        result = await resp.json()
+                        if "choices" in result and result["choices"]:
+                            text = result["choices"][0].get("text", "")
+                        else:
+                            text = ""
+                        short_resp = text[:400].replace("\n", " ")
+                        logger.info(f"[vLLMExec] Response: {short_resp}...")
+                        return text
+            except Exception as e:
+                logger.error(f"[vLLMExec] Error: {e}")
+                return ""
+
 # ============================ Helpers ============================
 def ensure_directory_exists(directory):
     if not os.path.exists(directory):
@@ -131,25 +188,57 @@ async def _configure_postprocessor(extraction, exec_provider):
     return extraction(llm_config=exec_provider)
 
 # ============================ Core ============================
+import os
+import re
+import pickle
+import asyncio
+import importlib
+from datetime import datetime
+
 async def get_scores(work_dir, data_set, exec_provider, max_concurrent_tasks,
                      i, question_start, question_end, post_dir, use_judger,
-                     use_extraction, data, benchmark):
-    vali_num = 3
+                     use_extraction, data, benchmark, temp_path,
+                     save_interval=50, output_base="checkpoint", parallel_id="main"):
+    vali_num = 1
     prompt_module = importlib.import_module(f"ScoreFlow.scripts.{data_set}.conditions")
     TIME_LIMIT = prompt_module.TIME_LIMIT
     PYTHON_END = prompt_module.PYTHON_END.format(time=TIME_LIMIT)
     PYTHON_START = prompt_module.PYTHON_START
-    TEMP_AVOID = prompt_module.TEMP_AVOID  # chưa dùng ở đây, vẫn load để tương thích
+    TEMP_AVOID = prompt_module.TEMP_AVOID  # compatibility
 
     semaphore = asyncio.Semaphore(max_concurrent_tasks)
     graph_scores = []
     tasks = []
+    processed_since_last_save = 0
+
     extraction = load_postprocessor(post_dir, "extraction")
     judger = load_postprocessor(post_dir, "judger")
 
     configured_judger = await _configure_postprocessor(judger, exec_provider) if use_judger else None
     configured_extraction = await _configure_postprocessor(extraction, exec_provider) if use_extraction else None
 
+    # === checkpoint helpers ===
+    def timestamp_str():
+        return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    def _write_checkpoint(filename, data):
+        """Write pickle safely (flush + fsync)."""
+        with open(filename, "wb") as f:
+            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+            f.flush()
+            os.fsync(f.fileno())
+
+    async def save_checkpoint_async():
+        """Async-safe periodic save via thread offloading."""
+        ts = timestamp_str()
+        checkpoint_file = temp_path + f"{output_base}_scores_{parallel_id}_{ts}.pkl"
+        try:
+            await asyncio.to_thread(_write_checkpoint, checkpoint_file, graph_scores)
+            logger.info(f"💾 Saved checkpoint ({len(graph_scores)} entries) → {checkpoint_file}")
+        except Exception as e:
+            logger.error(f"⚠️ Error saving checkpoint: {e}")
+
+    # === evaluation loop ===
     for question_id in range(question_start, question_end):
         problem = data[i][0]
         graph = []
@@ -159,7 +248,7 @@ async def get_scores(work_dir, data_set, exec_provider, max_concurrent_tasks,
             if i == len(data):
                 break
             i_id = benchmark.get_problem_id(data[i][0])
-            i_last_id = benchmark.get_problem_id(data[i-1][0])
+            i_last_id = benchmark.get_problem_id(data[i - 1][0])
             if i_id != i_last_id:
                 break
 
@@ -181,8 +270,10 @@ async def get_scores(work_dir, data_set, exec_provider, max_concurrent_tasks,
 
                 async def sem_evaluate(question_id, graph_id, rep_id, problem,
                                        configured_extraction, configured_judger, configured_graph):
+                    nonlocal processed_since_last_save
                     async with semaphore:
                         try:
+                            logger.info(f"Start evaluating query id {question_id}, graph_id {graph_id}, rep_id {rep_id}")
                             results = await benchmark.evaluate_problem(
                                 problem, configured_extraction, configured_judger, configured_graph
                             )
@@ -191,8 +282,20 @@ async def get_scores(work_dir, data_set, exec_provider, max_concurrent_tasks,
                                 question_id, graph_id, rep_id,
                                 results[3], results[0], results[1], results[2]
                             ])
+                            processed_since_last_save += 1
+
+                            logger.info(f"Results of query id {question_id}, graph_id {graph_id}, rep_id {rep_id}: {results[3]}")
+                            logger.info(f"Finish evaluating query id {question_id}, graph_id {graph_id}, rep_id {rep_id}")
+
+                            # Periodic checkpointing
+                            if processed_since_last_save >= save_interval:
+                                await save_checkpoint_async()
+                                processed_since_last_save = 0
+
                         except Exception as e:
-                            logger.info(f"Error when running: {e}")
+                            logger.error(
+                                f"Errors when evaluating q={question_id}, g={graph_id}, rep={rep_id}, Error: {str(e)}"
+                            )
 
                 for rep_id in range(vali_num):
                     tasks.append(
@@ -210,11 +313,15 @@ async def get_scores(work_dir, data_set, exec_provider, max_concurrent_tasks,
             except Exception:
                 pass
 
-        if i == len(data):
+        if question_start >= question_end:
             break
 
     await asyncio.gather(*tasks)
+
+    # === final save ===
+    await save_checkpoint_async()
     return graph_scores
+
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate generated workflows")
@@ -251,25 +358,41 @@ def main():
     logger.info(f"✅ Loaded {len(data)} workflow records from {pkl_path}")
 
     # ===== chuẩn bị executor (API thay vì vLLM local) =====
-    exec_provider = APILLMProviderShim(
-        base_url=os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1"),
-        api_key=os.environ["OPENAI_API_KEY"],
-        model_name=os.environ.get("OPENAI_MODEL_NAME", "gpt-4o-mini"),
-        temperature=float(os.environ.get("EXECUTOR_TEMPERATURE", 0.0)),
-        top_p=0.95,
-        max_tokens=512,
-        concurrent=5
-    )
+    # ===== chọn provider backend =====
+    backend_type = os.environ.get("EXECUTOR_BACKEND", "openai").lower()
+
+    if backend_type == "vllm":
+        exec_provider = VLLMProviderShim(
+            base_url=os.environ.get("VLLM_API_BASE", "http://localhost:8000/v1"),
+            model_name=os.environ.get("VLLM_MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct"),
+            temperature=float(os.environ.get("EXECUTOR_TEMPERATURE", 0.0)),
+            top_p=0.95,
+            max_tokens=512,
+            concurrent=int(os.environ.get("EXECUTOR_CONCURRENT", 5))
+        )
+    else:
+        exec_provider = APILLMProviderShim(
+            base_url=os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1"),
+            api_key=os.environ["OPENAI_API_KEY"],
+            model_name=os.environ.get("OPENAI_MODEL_NAME", "gpt-4o-mini"),
+            temperature=float(os.environ.get("EXECUTOR_TEMPERATURE", 0.0)),
+            top_p=0.95,
+            max_tokens=512,
+            concurrent=int(os.environ.get("EXECUTOR_CONCURRENT", 5))
+        )
+
+    logger.info(f"✅ Using executor backend: {backend_type.upper()} ({exec_provider.model})")
 
     # ===== các tham số mặc định =====
     difference = 3000
-    max_concurrent_tasks = 30
+    max_concurrent_tasks = 4
     use_extraction = True
     use_judger = (task_type == "inference")
     graph_num = 1 if use_judger else 8
 
     work_dir = "scoreflow_workspace/temp_eval_workflow_file"
     output_dir = os.path.splitext(pkl_path)[0] + f"_scores_{parallel_id}.pkl"
+    temp_path = os.path.splitext(pkl_path)[0]
     ensure_directory_exists(work_dir)
 
     post_dir = f"ScoreFlow/scripts/{data_set}"
@@ -277,7 +400,7 @@ def main():
     # ===== xác định range chạy =====
     len_data = int(len(data) / graph_num)
     if args.full:
-        start, end = 0, len_data
+        start, end = 62, len_data
     else:
         chunk = len_data // 3
         start = parallel_id * chunk
@@ -300,7 +423,7 @@ def main():
             get_scores(
                 work_dir, data_set, exec_provider, max_concurrent_tasks,
                 i, question_start, question_end, post_dir,
-                use_judger, use_extraction, data, benchmark,
+                use_judger, use_extraction, data, benchmark, temp_path
             )
         )
         score_results.extend(graph_scores)

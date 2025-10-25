@@ -17,6 +17,8 @@ from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 from dotenv import load_dotenv
 
+import random
+
 load_dotenv()
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -25,13 +27,14 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 class APILLMProviderShim:
     """Provider gọi API thay vì local vLLM, dùng cho executor."""
     def __init__(self, base_url, api_key, model_name="gpt-3.5-turbo",
-                 temperature=0.0, top_p=0.95, max_tokens=1024, concurrent=5):
+                 temperature=0.0, top_p=0.95, max_tokens=1024, concurrent=5, stop=["</graph>"]):
         self.base_url = base_url
         self.api_key = api_key
         self.model_name = model_name
         self.temperature = temperature
         self.top_p = top_p
         self.max_tokens = max_tokens
+        self.stop = stop
         
         # Khởi tạo OpenAI client
         self.client = OpenAI(
@@ -65,6 +68,7 @@ class APILLMProviderShim:
                         temperature=self.temperature,
                         top_p=self.top_p,
                         max_tokens=self.max_tokens,
+                        stop=self.stop,
                         timeout=120
                     )
                     return response.choices[0].message.content
@@ -181,14 +185,12 @@ async def test_if_runable(
             graph_content = re.search(r"<graph>(.*?)</graph>", generated_text, re.DOTALL)
             if graph_content is None:
                 logger.info(f"Error for datapoint {sub_index_i}: Format error")
-                fail_list.append(i)
                 return False
 
             class_script = graph_content.group(1).strip()
             extract_graph_script = re.search(r"async def run_workflow\(self\)(.*?)return", class_script, re.DOTALL)
             if extract_graph_script is None:
                 logger.info(f"Error for datapoint {sub_index_i}: Format error")
-                fail_list.append(i)
                 return False
 
             extract_graph_script = extract_graph_script.group(1).strip()
@@ -198,7 +200,6 @@ async def test_if_runable(
             similar_score = similarity_ratio(extract_graph_script, extract_TEMP_AVOID)
             if similar_score >= sim_threshold:
                 logger.info(f"Error for datapoint {sub_index_i}: Nearly no modification")
-                fail_list.append(i)
                 return False
 
             python_script = PYTHON_START + class_script + PYTHON_END
@@ -208,7 +209,7 @@ async def test_if_runable(
                     logger.info(
                         f"Error for datapoint {sub_index_i}: Contain no_exception_char {no_exception_char}"
                     )
-                    fail_list.append(i)
+
                     return False
 
             file_name = f"/graph_{num_epoch}_{sub_index_i}.py"
@@ -241,18 +242,19 @@ async def test_if_runable(
                 os.remove(graph_file_path + f"/graph_{num_epoch}_{sub_index_i}.py")
             except Exception:
                 pass
-            logger.info(f"Error for datapoint {sub_index_i}: {e}")
-            fail_list.append(i)
+            logger.info(f"Error for datapoint {sub_index_i}: {e}"
             return False
 
 
-async def get_fail_list(
+
+# ---------------------- Worker function ----------------------
+async def worker(
     num_epoch,
-    sub_index,
-    sub_generated_results,
-    sub_type_list,
+    q: asyncio.Queue,
+    results: dict,
+    results_lock: asyncio.Lock,
+    save_lock: asyncio.Lock,
     llm_config,
-    semaphore,
     PYTHON_START,
     PYTHON_END,
     sim_threshold,
@@ -261,20 +263,91 @@ async def get_fail_list(
     NO_EXCEPTION_LIST,
     temp_file_dir,
     provider,
+    save_interval: int = 50,  # Save every N processed graphs
 ):
-    tasks = []
-    fail_list = []
-    for i, generated_text in enumerate(sub_generated_results):
-        tasks.append(
-            test_if_runable(
+    processed_count = 0
+
+    while True:
+        item = await q.get()
+        if item is None:
+            q.task_done()
+            break
+
+        i, sub_index_i, generated_text, problem_type = item
+
+        ok = await test_if_runable(
+            num_epoch,
+            sub_index_i,
+            generated_text,
+            problem_type,
+            llm_config,
+            PYTHON_START,
+            PYTHON_END,
+            sim_threshold,
+            TEMP_AVOID,
+            TEST_PROMPT,
+            NO_EXCEPTION_LIST,
+            temp_file_dir,
+            provider,
+        )
+
+        async with results_lock:
+            results[i] = ok
+            processed_count += 1
+            total_done = len(results)
+
+        # Periodic checkpoint saving
+        if total_done % save_interval == 0:
+            async with save_lock:
+                checkpoint_path = os.path.join(temp_file_dir, f"fail_checkpoint_epoch_{num_epoch}.pkl")
+                try:
+                    os.makedirs(temp_file_dir, exist_ok=True)
+                    async with aiofiles.open(checkpoint_path, "wb") as f:
+                        await asyncio.to_thread(pickle.dump, results, f)
+                    logger.info(f"[Checkpoint] Saved progress → {checkpoint_path} ({total_done} processed)")
+                except Exception as e:
+                    logger.warning(f"[Checkpoint] Failed to save at {total_done}: {e}")
+
+        q.task_done()
+
+
+# ---------------------- Main controller ----------------------
+async def get_fail_list(
+    num_epoch,
+    sub_index,
+    sub_generated_results,
+    sub_type_list,
+    llm_config,
+    max_concurrent_tasks,
+    PYTHON_START,
+    PYTHON_END,
+    sim_threshold,
+    TEMP_AVOID,
+    TEST_PROMPT,
+    NO_EXCEPTION_LIST,
+    temp_file_dir,
+    provider,
+    save_interval: int = 50,
+):
+    q = asyncio.Queue()
+    results = {}
+    results_lock = asyncio.Lock()
+    save_lock = asyncio.Lock()
+
+    # Populate queue
+    for i, gen_text in enumerate(sub_generated_results):
+        await q.put((i, sub_index[i], gen_text, sub_type_list[i]))
+
+    # Spawn workers
+    workers = [
+        asyncio.create_task(
+            worker(
                 num_epoch,
-                sub_index[i],
-                i,
-                generated_text,
-                sub_type_list[i],
-                fail_list,
+                q,
+                results,
+                results_lock,
+                save_lock,
                 llm_config,
-                semaphore,
                 PYTHON_START,
                 PYTHON_END,
                 sim_threshold,
@@ -283,9 +356,32 @@ async def get_fail_list(
                 NO_EXCEPTION_LIST,
                 temp_file_dir,
                 provider,
+                save_interval,
             )
         )
-    await asyncio.gather(*tasks)
+        for _ in range(max_concurrent_tasks)
+    ]
+
+    await q.join()
+
+    # Stop workers gracefully
+    for _ in range(max_concurrent_tasks):
+        await q.put(None)
+    await asyncio.gather(*workers)
+
+    fail_list = [i for i, ok in results.items() if not ok]
+    logger.info(f"🧩 {len(fail_list)} tasks failed at epoch {num_epoch}")
+
+    # Final save
+    checkpoint_path = os.path.join(temp_file_dir, f"fail_checkpoint_epoch_{num_epoch}_final.pkl")
+    try:
+        os.makedirs(temp_file_dir, exist_ok=True)
+        async with aiofiles.open(checkpoint_path, "wb") as f:
+            await asyncio.to_thread(pickle.dump, results, f)
+        logger.info(f"[Final Save] Saved full checkpoint → {checkpoint_path}")
+    except Exception as e:
+        logger.warning(f"[Final Save] Failed to save final checkpoint: {e}")
+
     return fail_list
 
 
@@ -301,7 +397,8 @@ async def generate_graphs(
     data_set,
     llm_config,
     temp_file_dir,
-    provider,  # API provider cho executor
+    provider,  # API provider cho executor,
+    chunk_size = 200
 ):
     prompt_module = importlib.import_module(f"ScoreFlow.scripts.{data_set}.conditions")
     TIME_LIMIT_TEST = prompt_module.TIME_LIMIT_TEST
@@ -317,7 +414,15 @@ async def generate_graphs(
     # Build prompts and type list
     prompts = []
     type_list = []
-    for problem in data:
+
+    # select here
+    random.seed(42)
+
+    sample = random.sample(data, 1000)
+
+    print(f"We optimizing {len(sample)} samples out of total {len(data)} samples")
+
+    for problem in sample:
         optimize_prompt = START_PORMPT + benchmark.get_graph_input_text(problem) + END_PROMPT
         prompts += [optimize_prompt] * graph_num
         if "problem_type" in problem:
@@ -327,22 +432,60 @@ async def generate_graphs(
 
     # Initial generation
     generated_results = []
-    try:
-        outputs = llm.generate(prompts, sampling_params)
-        for out in outputs:
-            if not out or not getattr(out, "outputs", None) or not out.outputs:
-                generated_results.append(
-                    "<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>"
-                )
-                continue
-            text = getattr(out.outputs[0], "text", "") or ""
-            generated_results.append(text + "</graph>")
-    except Exception as e:
-        logger.info(f"[generator] vLLM generate failed: {e}")
-        for _ in prompts:
-            generated_results.append(
-                "<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>"
-            )
+    total = len(prompts)
+    os.makedirs(temp_file_dir, exist_ok=True)
+    generated_results = []
+
+    # ---------------------- Generate in Chunks ----------------------
+    for chunk_start in range(0, total, chunk_size):
+        chunk_end = min(chunk_start + chunk_size, total)
+        chunk_prompts = prompts[chunk_start:chunk_end]
+        logger.info(f"Generating chunk {chunk_start // chunk_size + 1}: {len(chunk_prompts)} prompts")
+
+        chunk_results = []
+        try:
+            if hasattr(llm, "generate"):  # sync vLLM-style
+                outputs = llm.generate(chunk_prompts, sampling_params)
+                for out in outputs:
+                    if not out or not getattr(out, "outputs", None) or not out.outputs:
+                        chunk_results.append("<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>")
+                        continue
+                    text = getattr(out.outputs[0], "text", "") or ""
+                    if "</graph>" not in text:
+                        text += "</graph>"
+                    chunk_results.append(text)
+            else:  # async OpenAI-style
+                semaphore = asyncio.Semaphore(max_concurrent_tasks)
+
+                async def generate_one(prompt):
+                    async with semaphore:
+                        try:
+                            result = await llm.aask(prompt)
+                            if not result.strip():
+                                return "<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>"
+                            if "</graph>" not in result:
+                                result += "</graph>"
+                            return result
+                        except Exception as e:
+                            logger.warning(f"Error during generation: {e}")
+                            return "<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>"
+
+                chunk_results = await asyncio.gather(*[generate_one(p) for p in chunk_prompts])
+
+        except Exception as e:
+            logger.warning(f"[Generator] Chunk failed: {e}")
+            chunk_results = ["<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>"] * len(chunk_prompts)
+
+        # ✅ Save after each chunk
+        generated_results.extend(chunk_results)
+        chunk_idx = chunk_start // chunk_size
+        checkpoint_path = os.path.join(temp_file_dir, f"checkpoint_generate_chunk_{chunk_idx}.pkl")
+        with open(checkpoint_path, "wb") as f:
+            pickle.dump(generated_results, f)
+
+        logger.info(f"Saved checkpoint: {checkpoint_path} ({len(generated_results)} total)")
+
+    logger.info(f"✅ Generation complete. {len(generated_results)} graphs generated.")
 
     sub_generated_results = generated_results
     sub_type_list = type_list
@@ -378,8 +521,27 @@ async def generate_graphs(
         sub_type_list = [type_list[i] for i in sub_index]
         logger.info(f"Epoch {num_epoch}: {len(fail_list)} failed graphs. Regenerating...")
 
-        outputs = llm.generate(sub_prompts, sampling_params)
-        sub_generated_results = [(out.outputs[0].text + "</graph>") for out in outputs]
+        sub_generated_results = []
+
+        for chunk_start in range(0, len(sub_prompts), chunk_size):
+            chunk_end = min(chunk_start + chunk_size, len(sub_prompts))
+            chunk_prompts = sub_prompts[chunk_start:chunk_end]
+
+            try:
+                outputs = llm.generate(chunk_prompts, sampling_params)
+                chunk_results = [(out.outputs[0].text + "</graph>") for out in outputs]
+            except Exception as e:
+                logger.warning(f"[Regenerate] Failed chunk: {e}")
+                chunk_results = ["<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>"] * len(chunk_prompts)
+
+            sub_generated_results.extend(chunk_results)
+            # ✅ autosave checkpoint for every regeneration chunk
+            checkpoint_path = os.path.join(temp_file_dir, f"checkpoint_regen_epoch_{num_epoch}_chunk_{chunk_start//chunk_size}.pkl")
+            with open(checkpoint_path, "wb") as f:
+                pickle.dump(sub_generated_results, f)
+            logger.info(f"[Checkpoint] Saved regeneration chunk at {checkpoint_path}")
+        
+        # OK if we reach here then we already regenerated new flock of workflows
 
         for idx in sub_index:
             generated_results[idx] = sub_generated_results[sub_index.index(idx)]
@@ -417,13 +579,18 @@ def main():
     if task_type == "optimize":
         data_set_type = "validate"
         output_dir = f"scoreflow_workspace/output_workflow/dataset-{epoch}.pkl"
+        output_json_path = f"scoreflow_workspace/output_workflow/dataset-{data_set}-{epoch}.json"
         graph_num = 8
     elif task_type == "inference":
         data_set_type = "test"
         output_dir = f"scoreflow_workspace/output_workflow/dataset-{epoch}-test.pkl"
+        output_json_path = f"scoreflow_workspace/output_workflow/dataset-{data_set}-{epoch}-test.json"
         graph_num = 1
     else:
         raise ValueError("task must be 'optimize' hoặc 'inference'")
+    
+    if data_set == "GSM8K":
+        data_set_type = "train"
 
     file_path = f"data/{bench_dic[data_set]['benchmark_name']}_{data_set_type}.jsonl"
     is_first = (epoch == 0)
@@ -436,8 +603,8 @@ def main():
 
     os.environ["CUDA_VISIBLE_DEVICES"] = config1["CUDA_VISIBLE_DEVICES"]
     num_gpu = config1["CUDA_VISIBLE_DEVICES"].count(",") + 1
-    num_epoch = 500
-    max_concurrent_tasks = 20
+    num_epoch = 30
+    max_concurrent_tasks = 15
 
     temp_file_dir = "scoreflow_workspace/temp_gene_workflow_file"
     finetuned_model_name = f"scoreflow_workspace/finetuned/{epoch}/merged"
@@ -458,7 +625,20 @@ def main():
 
     # Generator: vẫn dùng vLLM local
     llm, _ = load_model(is_first, generator_model, finetuned_model_name, num_gpu)
+
+    # Generator: API
+    # llm = APILLMProviderShim(
+    #     base_url=os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1"),
+    #     api_key=os.environ["OPENAI_API_KEY"],
+    #     model_name=os.environ.get("OPENAI_MODEL_NAME", "gpt-4o-mini"),
+    #     temperature=float(os.environ.get("GENERATOR_TEMPERATURE", 0.0)),
+    #     top_p=0.95,
+    #     max_tokens=1024,
+    #     concurrent=5,
+    # )
+
     sampling_params = get_sampling_params(generator_temperature)
+
 
     # Executor: dùng API
     api_provider = APILLMProviderShim(
@@ -491,9 +671,15 @@ def main():
         # Lưu ra pkl
         final_dataset = []
         for i in range(len(generated_results)):
-            final_dataset.append([data[int(i / graph_num)], generated_results[i]])
+            data[int(i / graph_num)]["graph"] = generated_results[i]
+
+            final_dataset.append(data[int(i / graph_num)])
         with open(output_dir, "wb") as f:
             pickle.dump(final_dataset, f)
+
+        with open(output_json_path, "w") as f:
+            json.dump(final_dataset, f, indent=4)
+        
         cprint("Generation Process Done!", color="green")
         
     finally:
