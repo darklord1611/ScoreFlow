@@ -21,17 +21,7 @@ from dotenv import load_dotenv
 
 import random
 
-import random, numpy as np, torch
-
-seed = 42
-random.seed(seed)
-np.random.seed(seed)
-torch.manual_seed(seed)
-torch.cuda.manual_seed_all(seed)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-
-MODEL_NAME="Qwen/Qwen2.5-32B-Instruct"
+MODEL_NAME="Qwen/Qwen2.5-0.5B-Instruct"
 OPENAI_BASE_URL="https://vnu-vinallama--example-vllm-openai-compatible-1-serve.modal.run/v1"
 API_KEY="super-secret-key"
 
@@ -378,11 +368,6 @@ async def get_fail_list(
     checkpoint_path = os.path.join(temp_file_dir, f"fail_checkpoint_epoch_{num_epoch}.pkl")
     results = {}
 
-    def trim_results(results, max_index=None):
-        if max_index is not None:
-            results = {k: v for k, v in results.items() if k < max_index}
-        return results
-
     if os.path.exists(checkpoint_path):
         try:
             def load_pickle(path):
@@ -392,10 +377,8 @@ async def get_fail_list(
             results = await asyncio.to_thread(load_pickle, checkpoint_path)
             if results:
                 last_done = max(results.keys())
-                # logger.info(f"Resuming from around index {last_done + 1}")
-                # Usage
-                results = trim_results(results, max_index=4000)
                 logger.info(f"[Resume] Loaded {len(results)} previous results from {checkpoint_path}")
+                logger.info(f"Resuming from around index {last_done + 1}")
             else:
                 logger.info("[Resume] Checkpoint found but empty — starting fresh.")
         except Exception as e:
@@ -484,6 +467,7 @@ async def generate_graphs(
     NO_EXCEPTION_LIST = prompt_module.NO_EXCEPTION_LIST
     START_PORMPT = prompt_module.START_PORMPT
     END_PROMPT = prompt_module.END_PROMPT
+    FEW_SHOT = prompt_module.FEW_SHOT_EXAMPLES
 
     # Build prompts and type list
     prompts = []
@@ -492,14 +476,12 @@ async def generate_graphs(
     # select here
     random.seed(42)
 
-    NUM_SAMPLES = 500
-
-    sample = random.sample(data, NUM_SAMPLES)
+    sample = random.sample(data, 1000)
 
     print(f"We optimizing {len(sample)} samples out of total {len(data)} samples")
 
     for problem in sample:
-        optimize_prompt = START_PORMPT + benchmark.get_graph_input_text(problem) + END_PROMPT
+        optimize_prompt = START_PORMPT + benchmark.get_graph_input_text(problem) + END_PROMPT + FEW_SHOT
         prompts += [optimize_prompt] * graph_num
         if "problem_type" in problem:
             type_list += [problem["problem_type"]] * graph_num
@@ -512,36 +494,7 @@ async def generate_graphs(
     os.makedirs(temp_file_dir, exist_ok=True)
     generated_results = []
 
-    # ---------------------- Resume from Latest Chunk ----------------------
-    # --- Locate checkpoints ---
-    checkpoints = glob.glob(os.path.join(temp_file_dir, "checkpoint_generate_zeroshot_chunk_*.pkl"))
-
-    if checkpoints:
-        # ✅ Sort numerically by extracted chunk index
-        def extract_chunk_num(path):
-            m = re.search(r"chunk_(\d+)\.pkl", path)
-            return int(m.group(1)) if m else -1
-
-        checkpoints.sort(key=extract_chunk_num)
-        latest_ckpt = checkpoints[-1]
-
-        try:
-            with open(latest_ckpt, "rb") as f:
-                generated_results = pickle.load(f)
-                generated_results = generated_results[:(NUM_SAMPLES * graph_num)]
-            start_chunk = extract_chunk_num(latest_ckpt) + 1
-            logger.info(
-                f"[Resume] Loaded {len(generated_results)} graphs from {latest_ckpt}. "
-                f"Resuming from chunk {start_chunk}."
-            )
-        except Exception as e:
-            logger.warning(f"[Resume] Failed to load checkpoint {latest_ckpt}: {e}")
-            start_chunk = 0
-            generated_results = []
-    else:
-        logger.info("[Resume] No previous checkpoint found. Starting from scratch.")
-        start_chunk = 0
-        generated_results = []
+    start_chunk = 0
 
     # ---------------------- Generate in Chunks ----------------------
     for chunk_start in range(start_chunk * chunk_size, total, chunk_size):
@@ -602,98 +555,96 @@ async def generate_graphs(
     sub_index = list(range(len(generated_results)))
 
     # Iterative refinement with checkpoints
-    while num_epoch >= 0:
-        semaphore = asyncio.Semaphore(max_concurrent_tasks)
-        fail_list = await get_fail_list(
-            num_epoch,
-            sub_index,
-            sub_generated_results,
-            sub_type_list,
-            llm_config,
-            max_concurrent_tasks,
-            PYTHON_START,
-            PYTHON_END,
-            sim_threshold,
-            TEMP_AVOID,
-            TEST_PROMPT,
-            NO_EXCEPTION_LIST,
-            temp_file_dir,
-            provider,
-        )
+    # while num_epoch >= 0:
+    #     semaphore = asyncio.Semaphore(max_concurrent_tasks)
+    #     fail_list = await get_fail_list(
+    #         num_epoch,
+    #         sub_index,
+    #         sub_generated_results,
+    #         sub_type_list,
+    #         llm_config,
+    #         max_concurrent_tasks,
+    #         PYTHON_START,
+    #         PYTHON_END,
+    #         sim_threshold,
+    #         TEMP_AVOID,
+    #         TEST_PROMPT,
+    #         NO_EXCEPTION_LIST,
+    #         temp_file_dir,
+    #         provider,
+    #     )
 
-        if len(fail_list) == 0:
-            logger.info(f"✅ All graphs passed at epoch {num_epoch}.")
-            break
-            
-        print(len(fail_list))
+    #     if len(fail_list) == 0:
+    #         logger.info(f"✅ All graphs passed at epoch {num_epoch}.")
+    #         break
 
-        fail_list.sort()
-        sub_index = [sub_index[i] for i in fail_list]
-        sub_prompts = [prompts[i] for i in sub_index]
-        sub_type_list = [type_list[i] for i in sub_index]
-        logger.info(f"Epoch {num_epoch}: {len(fail_list)} failed graphs. Regenerating...")
+    #     fail_list.sort()
+    #     sub_index = [sub_index[i] for i in fail_list]
+    #     sub_prompts = [prompts[i] for i in sub_index]
+    #     sub_type_list = [type_list[i] for i in sub_index]
+    #     logger.info(f"Epoch {num_epoch}: {len(fail_list)} failed graphs. Regenerating...")
 
-        sub_generated_results = []
+    #     sub_generated_results = []
 
-        for chunk_start in range(0, len(sub_prompts), chunk_size):
-            chunk_end = min(chunk_start + chunk_size, len(sub_prompts))
-            chunk_prompts = sub_prompts[chunk_start:chunk_end]
-            chunk_results = []
-            try:
-                if hasattr(llm, "generate"):  # sync vLLM-style
-                    outputs = llm.generate(chunk_prompts, sampling_params)
-                    for out in outputs:
-                        if not out or not getattr(out, "outputs", None) or not out.outputs:
-                            chunk_results.append("<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>")
-                            continue
-                        text = getattr(out.outputs[0], "text", "") or ""
-                        if "</graph>" not in text:
-                            text += "</graph>"
-                        chunk_results.append(text)
-                else:  # async OpenAI-style
+    #     for chunk_start in range(0, len(sub_prompts), chunk_size):
+    #         chunk_end = min(chunk_start + chunk_size, len(sub_prompts))
+    #         chunk_prompts = sub_prompts[chunk_start:chunk_end]
+    #         chunk_results = []
+    #         try:
+    #             if hasattr(llm, "generate"):  # sync vLLM-style
+    #                 outputs = llm.generate(chunk_prompts, sampling_params)
+    #                 for out in outputs:
+    #                     if not out or not getattr(out, "outputs", None) or not out.outputs:
+    #                         chunk_results.append("<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>")
+    #                         continue
+    #                     text = getattr(out.outputs[0], "text", "") or ""
+    #                     if "</graph>" not in text:
+    #                         text += "</graph>"
+    #                     chunk_results.append(text)
+    #             else:  # async OpenAI-style
 
-                    async def generate_one(prompt):
-                        async with semaphore:
-                            try:
-                                result = await llm.aask(prompt)
-                                if not result.strip():
-                                    return "<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>"
-                                if "</graph>" not in result:
-                                    result += "</graph>"
-                                return result
-                            except Exception as e:
-                                logger.warning(f"Error during generation: {e}")
-                                return "<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>"
+    #                 async def generate_one(prompt):
+    #                     async with semaphore:
+    #                         try:
+    #                             result = await llm.aask(prompt)
+    #                             if not result.strip():
+    #                                 return "<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>"
+    #                             if "</graph>" not in result:
+    #                                 result += "</graph>"
+    #                             return result
+    #                         except Exception as e:
+    #                             logger.warning(f"Error during generation: {e}")
+    #                             return "<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>"
 
-                    chunk_results = await asyncio.gather(*[generate_one(p) for p in chunk_prompts])
-            except Exception as e:
-                logger.warning(f"[Regenerate] Failed chunk: {e}")
-                chunk_results = ["<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>"] * len(chunk_prompts)
+    #                 chunk_results = await asyncio.gather(*[generate_one(p) for p in chunk_prompts])
+    #         except Exception as e:
+    #             logger.warning(f"[Regenerate] Failed chunk: {e}")
+    #             chunk_results = ["<graph>\nclass Workflow:\n    async def run_workflow(self):\n        return ''\n</graph>"] * len(chunk_prompts)
 
-            sub_generated_results.extend(chunk_results)
-            # ✅ autosave checkpoint for every regeneration chunk
-            checkpoint_path = os.path.join(temp_file_dir, f"checkpoint_regen_epoch_{num_epoch}_chunk_{chunk_start//chunk_size}.pkl")
-            with open(checkpoint_path, "wb") as f:
-                pickle.dump(sub_generated_results, f)
-            logger.info(f"[Checkpoint] Saved regeneration chunk at {checkpoint_path}")
+    #         sub_generated_results.extend(chunk_results)
+    #         # ✅ autosave checkpoint for every regeneration chunk
+    #         checkpoint_path = os.path.join(temp_file_dir, f"checkpoint_regen_epoch_{num_epoch}_chunk_{chunk_start//chunk_size}.pkl")
+    #         with open(checkpoint_path, "wb") as f:
+    #             pickle.dump(sub_generated_results, f)
+    #         logger.info(f"[Checkpoint] Saved regeneration chunk at {checkpoint_path}")
         
-        # OK if we reach here then we already regenerated new flock of workflows
+    #     # OK if we reach here then we already regenerated new flock of workflows
 
-        for idx in sub_index:
-            generated_results[idx] = sub_generated_results[sub_index.index(idx)]
-            type_list[idx] = sub_type_list[sub_index.index(idx)]
+    #     for idx in sub_index:
+    #         generated_results[idx] = sub_generated_results[sub_index.index(idx)]
+    #         type_list[idx] = sub_type_list[sub_index.index(idx)]
 
-        # ✅ Save checkpoint after each epoch
-        try:
-            os.makedirs(temp_file_dir, exist_ok=True)
-            checkpoint_path = os.path.join(temp_file_dir, f"checkpoint_epoch_{num_epoch}.pkl")
-            with open(checkpoint_path, "wb") as f:
-                pickle.dump(generated_results, f)
-            logger.info(f"[Checkpoint] Saved intermediate results to {checkpoint_path}")
-        except Exception as e:
-            logger.warning(f"[Checkpoint] Failed to save checkpoint at epoch {num_epoch}: {e}")
+    #     # ✅ Save checkpoint after each epoch
+    #     try:
+    #         os.makedirs(temp_file_dir, exist_ok=True)
+    #         checkpoint_path = os.path.join(temp_file_dir, f"checkpoint_epoch_{num_epoch}.pkl")
+    #         with open(checkpoint_path, "wb") as f:
+    #             pickle.dump(generated_results, f)
+    #         logger.info(f"[Checkpoint] Saved intermediate results to {checkpoint_path}")
+    #     except Exception as e:
+    #         logger.warning(f"[Checkpoint] Failed to save checkpoint at epoch {num_epoch}: {e}")
 
-        num_epoch -= 1
+    #     num_epoch -= 1
 
     return generated_results
 

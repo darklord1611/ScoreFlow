@@ -15,5 +15,7 @@ tester.txt
 
 config
 
+metagpt
+
 !config/config1.example.yaml
 !config/config2.example.yaml

@@ -57,8 +57,8 @@ fi
 
 # # Đổi tên/di chuyển file pkl vào thư mục đích với tên chuẩn
 # GEN_PKL_DST="${OUTDIR}/${MODEL_SAFE}_${DATASET}_${EPOCH}.pkl"
-# # mv -f "$GEN_PKL_SRC" "$GEN_PKL_DST"
-# # echo "[INFO] Saved generated PKL -> $GEN_PKL_DST" | tee -a "$OUTDIR/run.log"
+# cp "$GEN_PKL_SRC" "$GEN_PKL_DST"
+# echo "[INFO] Saved generated PKL -> $GEN_PKL_DST" | tee -a "$OUTDIR/run.log"
 
 # # --- Chạy get_scores.py (full file PKL) ---
 # echo "[STEP] Running get_scores.py..."
@@ -88,6 +88,8 @@ fi
 # # ===================== HẬU XỬ LÝ: convert PKL -> JSON =====================
 # # 1) Convert scores PKL thành JSON
 # SCORE_JSON="${SCORES_PKL%.pkl}.json"
+# SCORE_JSON_OUT="${SCORES_PKL%.pkl}_named.json"
+# SCORE_JSON_FINAL="${SCORES_PKL%.pkl}_final.json"
 # echo "[STEP] Converting scores PKL to JSON..."
 # python3 convert_pkl_to_json.py --pkl_path "$SCORES_PKL" 2>&1 | tee -a "$OUTDIR/run.log"
  
@@ -109,3 +111,8 @@ fi
 # python3 convert_pkl_to_json_score.py --in "$SCORE_JSON" 2>&1 | tee -a "$OUTDIR/run.log"
  
 # echo "[ALL DONE] Đã convert & hậu xử lý điểm. Xem thư mục: $OUTDIR" | tee -a "$OUTDIR/run.log"
+
+# echo "[STEP] Post-processing results..."
+# python3 postprocess_result.py -w "$GEN_PKL_DST" -s "$SCORE_JSON_OUT" -o "$SCORE_JSON_FINAL" 2>&1 | tee -a "$OUTDIR/run.log"
+ 
+# echo "[ALL DONE]"

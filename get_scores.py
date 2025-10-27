@@ -13,7 +13,12 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fi
 from openai import OpenAI
 from dotenv import load_dotenv
 
-load_dotenv()
+# Force reload .env even if it was loaded before
+load_dotenv(override=True)
+
+MODEL_NAME="Qwen/Qwen2.5-32B-Instruct"
+OPENAI_BASE_URL="https://vnu-vinallama--example-vllm-openai-compatible-1-serve.modal.run/v1"
+API_KEY="super-secret-key"
 
 # Monkey-patch để bypass MetaGPT registry
 import metagpt.provider.llm_provider_registry as registry_module
@@ -361,25 +366,15 @@ def main():
     # ===== chọn provider backend =====
     backend_type = os.environ.get("EXECUTOR_BACKEND", "openai").lower()
 
-    if backend_type == "vllm":
-        exec_provider = VLLMProviderShim(
-            base_url=os.environ.get("VLLM_API_BASE", "http://localhost:8000/v1"),
-            model_name=os.environ.get("VLLM_MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct"),
-            temperature=float(os.environ.get("EXECUTOR_TEMPERATURE", 0.0)),
-            top_p=0.95,
-            max_tokens=512,
-            concurrent=int(os.environ.get("EXECUTOR_CONCURRENT", 5))
-        )
-    else:
-        exec_provider = APILLMProviderShim(
-            base_url=os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1"),
-            api_key=os.environ["OPENAI_API_KEY"],
-            model_name=os.environ.get("OPENAI_MODEL_NAME", "gpt-4o-mini"),
-            temperature=float(os.environ.get("EXECUTOR_TEMPERATURE", 0.0)),
-            top_p=0.95,
-            max_tokens=512,
-            concurrent=int(os.environ.get("EXECUTOR_CONCURRENT", 5))
-        )
+    exec_provider = APILLMProviderShim(
+        base_url=OPENAI_BASE_URL,
+        api_key=API_KEY,
+        model_name=MODEL_NAME,
+        temperature=float(os.environ.get("EXECUTOR_TEMPERATURE", 0.0)),
+        top_p=0.95,
+        max_tokens=512,
+        concurrent=int(os.environ.get("EXECUTOR_CONCURRENT", 5))
+    )
 
     logger.info(f"✅ Using executor backend: {backend_type.upper()} ({exec_provider.model})")
 
@@ -400,7 +395,7 @@ def main():
     # ===== xác định range chạy =====
     len_data = int(len(data) / graph_num)
     if args.full:
-        start, end = 62, len_data
+        start, end = 0, len_data
     else:
         chunk = len_data // 3
         start = parallel_id * chunk

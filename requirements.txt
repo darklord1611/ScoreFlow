@@ -11,3 +11,4 @@ peft
 nltk
 matplotlib
 scikit-learn
+numpy

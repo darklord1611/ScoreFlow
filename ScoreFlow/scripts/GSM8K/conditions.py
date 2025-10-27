@@ -118,3 +118,26 @@ TIME_LIMIT_TEST = 60
 TIME_LIMIT = 120
 sim_threshold = 0.8
 
+examples = [
+    {
+        "query": "April is donating plant pots to a local school for their new garden. They ask for 30 plant pots for the daisies, and twice as many for the roses. April had already bought 100 plant pots from the garden center before she knew how many she needed. How many plant pots does April have left over?",
+        "graph": "class Workflow:\n    def __init__(\n        self,\n        name: str,\n        llm_config,\n        dataset: DatasetType,\n    ) -> None:\n        self.name = name\n        self.dataset = dataset\n        self.llm = create_llm_instance(llm_config)\n        self.custom = operator.Custom(self.llm)\n        self.programmer = operator.Programmer(self.llm)\n        self.review = operator.Review(self.llm)\n        self.revise = operator.Revise(self.llm)\n\n    async def __call__(self, problem: str):\n        # Step 1: Summarize the requirements for plant pots needed.\n        summary = await self.custom(input=problem, instruction=\"Summarize the needed plant pots for daisies and roses.\")\n        \n        # Step 2: Execute the calculation of remaining pots.\n        code_problem = \"total_pots = 100; daisies = 30; roses = daisies * 2; needed_pots = daisies + roses; leftover_pots = total_pots - needed_pots; leftover_pots\"\n        calculation = await self.programmer(problem=code_problem)\n        \n        # Step 3: Review the calculated result.\n        review_feedback = await self.review(problem=problem, solution=calculation['output'])\n        \n        # Step 4: Revise the solution if necessary.\n        if not review_feedback['review_result']:\n            revised_solution = await self.revise(problem=problem, solution=calculation['output'], feedback=review_feedback['feedback'])\n            final_solution = revised_solution['solution']\n        else:\n            final_solution = calculation['output']\n\n        return final_solution, self.llm.get_usage_summary()['total_cost']",
+        "prompt": "",
+        "modification": "The problem type is MATH, focusing on calculating the number of plant pots left. \n    My strategy involves first calculating the total plant pots needed and then determining how many are left after donation. \n    I will use multiple operators: \n    1. A **Custom** operator to summarize the requirements based on the user's query.\n    2. A **Programmer** operator to write a code snippet that calculates the total needed pots and leftover pots.\n    3. A **Review** operator to verify the solution for accuracy before finalizing it.\n    4. A **Revise** operator to amend any inaccuracies identified in the review, if necessary.\n    \n    The logical flow is as follows:\n    - First, summarize the requirements (30 pots for daisies and 60 pots for roses).\n    - Next, execute the calculation in Python code.\n    - Review the result for correctness.\n    - Revise it if needed, then return the final solution and cost.",
+    },
+]
+
+# now restructure this examples into a prompt so we can use
+
+FEWSHOT_WORKFLOW_EXAMPLES = """
+\n
+Here is a set of few-shot examples of desired workflow optimizations. Each example includes the user's query, the optimized graph, the custom prompts used (if any), and a detailed reasoning of the modifications made.
+"""
+for ex in examples:
+    FEWSHOT_WORKFLOW_EXAMPLES += f"""
+    <example>
+        <query>{ex['query']}</query>
+        <graph>{ex['graph']}</graph>
+    </example>
+"""
+
